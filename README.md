@@ -1,6 +1,6 @@
-# Herdr Team
+# Herdr Agent Mesh
 
-Herdr Team is a small, provider-neutral TypeScript skeleton for routing explicitly authorized messages between local Herdr panes.
+Herdr Agent Mesh is a small, provider-neutral TypeScript skeleton for routing explicitly authorized messages between local Herdr panes.
 
 This work unit provides:
 
@@ -23,7 +23,7 @@ Idempotency is backed by an injectable deduplication store. The default store is
 ## Requirements
 
 - Bun 1.1+ or Node 20+ with Bun available for the test/build scripts.
-- A local `herdr` executable when using the default transport. Set `HERDR_TEAM_HERDR_BIN` only when the executable has a different local path.
+- A local `herdr` executable when using the default transport. Set `HERDR_AGENT_MESH_HERDR_BIN` only when the executable has a different local path.
 
 ## Development
 

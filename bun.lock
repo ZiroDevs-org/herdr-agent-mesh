@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "herdr-team",
+      "name": "herdr-agent-mesh",
       "devDependencies": {
         "@types/bun": "^1.4.2",
       },

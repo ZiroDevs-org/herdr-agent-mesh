@@ -1,6 +1,6 @@
 # Delivery semantics
 
-Herdr Team records the strongest state supported by local evidence and no stronger.
+Herdr Agent Mesh records the strongest state supported by local evidence and no stronger.
 
 | State | Meaning |
 | --- | --- |

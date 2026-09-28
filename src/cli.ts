@@ -1,7 +1,7 @@
 import { readHerdrCallerContext } from "./context"
 import {
   HerdrCliTransport,
-  HerdrTeamClient,
+  HerdrAgentMeshClient,
   type DeduplicationStore,
   type HerdrTransport,
 } from "./herdr-client"
@@ -57,7 +57,7 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
     const options = parseOptions(arguments_)
     const env = dependencies.env ?? process.env
     const caller = readHerdrCallerContext(env)
-    const client = new HerdrTeamClient({
+    const client = new HerdrAgentMeshClient({
       transport: dependencies.transport ?? new HerdrCliTransport(),
       caller,
       deduplicationStore: dependencies.deduplicationStore,
@@ -158,7 +158,7 @@ function scopeFromOptions(options: CliOptions): ExplicitScope | undefined {
 
 function usage(): string {
   return [
-    "Herdr Team local bridge",
+    "Herdr Agent Mesh local bridge",
     "",
     "  discover [--tab-id ID | --workspace-id ID ...] [--json]",
     "  send --target-pane ID --text TEXT [--tab-id ID | --workspace-id ID ...] --authorize",

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto"
 
 export const PROTOCOL = {
-  NAME: "herdr-team",
-  MESSAGE_SCHEMA: "herdr-team.message/v1",
-  TOPOLOGY_SCHEMA: "herdr-team.topology/v1",
+  NAME: "herdr-agent-mesh",
+  MESSAGE_SCHEMA: "herdr-agent-mesh.message/v1",
+  TOPOLOGY_SCHEMA: "herdr-agent-mesh.topology/v1",
 } as const
 
 export const SCOPE_KIND = {
@@ -31,7 +31,7 @@ export const DELIVERY_STATE = {
 } as const
 
 export const CONSENT = {
-  RECEIPT_TYPE: "herdr-team.consent/v1",
+  RECEIPT_TYPE: "herdr-agent-mesh.consent/v1",
 } as const
 
 export const REJECTION_CODE = {

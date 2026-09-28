@@ -38,7 +38,7 @@ function topology(): HerdrSnapshot {
   return { protocol: 22, version: "0.9.0", agents: [agent()] }
 }
 
-describe("Herdr Team CLI", () => {
+describe("Herdr Agent Mesh CLI", () => {
   test("exposes read-only discovery with explicit tab scope", async () => {
     const output: string[] = []
     const code = await runCli(["discover", "--tab-id", "w1:t1", "--json"], {

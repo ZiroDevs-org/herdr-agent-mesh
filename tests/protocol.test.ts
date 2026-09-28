@@ -7,7 +7,7 @@ import {
   validateHerdrLocation,
 } from "../src/protocol"
 
-describe("Herdr Team protocol", () => {
+describe("Herdr Agent Mesh protocol", () => {
   test("keeps Herdr routing identity separate from descriptive metadata", () => {
     expect(validateHerdrLocation({
       workspace_id: "w1",

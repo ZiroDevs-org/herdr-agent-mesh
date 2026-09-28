@@ -1,16 +1,16 @@
 {
-  "name": "herdr-team",
+  "name": "herdr-agent-mesh",
   "version": "0.1.0",
-  "description": "Provider-neutral local routing primitives for directed Herdr team messages.",
+  "description": "Provider-neutral local routing primitives for directed Herdr Agent Mesh messages.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gentle-ai/herdr-team.git"
+    "url": "https://github.com/ZiroDevs-org/herdr-agent-mesh.git"
   },
   "bin": {
-    "herdr-team": "dist/cli.js",
-    "herdr-team-daemon": "dist/daemon.js"
+    "herdr-agent-mesh": "dist/cli.js",
+    "herdr-agent-mesh-daemon": "dist/daemon.js"
   },
   "scripts": {
     "test": "bun test",

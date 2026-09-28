@@ -29,7 +29,7 @@ class FakeTransport implements HerdrTransport {
 
 const env = { HERDR_WORKSPACE_ID: "w1", HERDR_TAB_ID: "w1:t1", HERDR_PANE_ID: "w1:p1" }
 
-describe("Herdr Team daemon", () => {
+describe("Herdr Agent Mesh daemon", () => {
   test("handles read-only discovery as JSON-lines", async () => {
     const output: string[] = []
     await runDaemon(

@@ -1,7 +1,7 @@
 import { readHerdrCallerContext } from "./context"
 import {
   HerdrCliTransport,
-  HerdrTeamClient,
+  HerdrAgentMeshClient,
   MemoryDeduplicationStore,
   type DeduplicationStore,
   type HerdrTransport,
@@ -54,7 +54,7 @@ export async function handleDaemonRequest(
   const id = requestId(input)
   try {
     const request = parseRequest(input)
-    const client = new HerdrTeamClient({
+    const client = new HerdrAgentMeshClient({
       transport: dependencies.transport ?? new HerdrCliTransport(),
       caller: readHerdrCallerContext(dependencies.env ?? process.env),
       deduplicationStore: dependencies.deduplicationStore ?? DAEMON_DEDUPLICATION_STORE,

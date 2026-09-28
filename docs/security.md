@@ -1,6 +1,6 @@
 # Security and authorization
 
-Herdr Team treats a message as an explicit user-authorized action, not as a discovery side effect.
+Herdr Agent Mesh treats a message as an explicit user-authorized action, not as a discovery side effect.
 
 ## Routing rules
 

@@ -1,5 +1,5 @@
-id = "herdr-team"
-name = "Herdr Team"
+id = "herdr-agent-mesh"
+name = "Herdr Agent Mesh"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
 description = "Provider-neutral discovery and explicitly authorized directed messages for local Herdr panes."
@@ -9,13 +9,13 @@ platforms = ["linux", "macos"]
 id = "discover"
 title = "Discover Herdr topology"
 description = "Read the verified current tab, or an explicitly supplied tab/workspace scope."
-command = ["herdr-team", "discover", "--json"]
+command = ["herdr-agent-mesh", "discover", "--json"]
 
 [[actions]]
 id = "send"
 title = "Send directed message"
 description = "Send only after reviewing and explicitly authorizing the exact pane and text."
-command = ["herdr-team", "send", "--target-pane", "<pane_id>", "--text", "<text>", "--authorize"]
+command = ["herdr-agent-mesh", "send", "--target-pane", "<pane_id>", "--text", "<text>", "--authorize"]
 
 [[build]]
 command = ["bun", "install"]
@@ -24,16 +24,16 @@ command = ["bun", "install"]
 command = ["bun", "run", "build"]
 
 [[panes]]
-id = "herdr-team-daemon"
-title = "Herdr Team daemon"
+id = "herdr-agent-mesh-daemon"
+title = "Herdr Agent Mesh daemon"
 placement = "sidebar"
-command = ["herdr-team-daemon"]
+command = ["herdr-agent-mesh-daemon"]
 
 [[startup]]
-id = "herdr-team-daemon"
-command = ["herdr-team-daemon"]
+id = "herdr-agent-mesh-daemon"
+command = ["herdr-agent-mesh-daemon"]
 
 [[events]]
-id = "herdr-team-topology"
+id = "herdr-agent-mesh-topology"
 event = "topology_changed"
-command = ["herdr-team", "discover", "--json"]
+command = ["herdr-agent-mesh", "discover", "--json"]

@@ -67,7 +67,7 @@ export interface HerdrCallerContext {
   session_id?: string
 }
 
-export interface HerdrTeamClientOptions {
+export interface HerdrAgentMeshClientOptions {
   transport: HerdrTransport
   caller?: HerdrCallerContext
   deduplicationStore?: DeduplicationStore
@@ -126,7 +126,7 @@ export class HerdrCliTransport implements HerdrTransport {
   private readonly spawnProcess: SpawnHerdrProcess
 
   constructor(options: { command?: string; spawnProcess?: SpawnHerdrProcess } = {}) {
-    this.command = options.command ?? process.env.HERDR_TEAM_HERDR_BIN ?? DEFAULT_HERDR_COMMAND
+    this.command = options.command ?? process.env.HERDR_AGENT_MESH_HERDR_BIN ?? DEFAULT_HERDR_COMMAND
     this.spawnProcess = options.spawnProcess ?? defaultSpawn
   }
 
@@ -171,14 +171,14 @@ export class HerdrCliTransport implements HerdrTransport {
   }
 }
 
-export class HerdrTeamClient {
+export class HerdrAgentMeshClient {
   private readonly transport: HerdrTransport
   private readonly caller: HerdrCallerContext | undefined
   private readonly deduplicationStore: DeduplicationStore
   private readonly now: () => Date
   private readonly makeId: () => string
 
-  constructor(options: HerdrTeamClientOptions) {
+  constructor(options: HerdrAgentMeshClientOptions) {
     this.transport = options.transport
     this.caller = options.caller
     this.deduplicationStore = options.deduplicationStore ?? new MemoryDeduplicationStore()

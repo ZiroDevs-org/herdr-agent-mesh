@@ -1,8 +1,8 @@
-# Herdr Team
+# Herdr Agent Mesh
 
 ## Objective
 
-Create an open-source, local-first Herdr plugin and provider-neutral bridge so independent AI Coding CLI sessions can discover one another and exchange explicitly authorized messages.
+Create an open-source, local-first Herdr Agent Mesh plugin and provider-neutral bridge so independent AI Coding CLI sessions can discover one another and exchange explicitly authorized messages.
 
 ## Problem
 
@@ -29,7 +29,7 @@ Herdr can see agents in panes, tabs, and workspaces, but communication is curren
 
 ## Authorized scope
 
-- Local repository: `/home/guayaba/herdr-team`
+- Local repository root: `/home/guayaba/herdr-team`
 - Local Herdr integration only.
 - No remote GitHub operation has been authorized with a destination yet.
 
@@ -68,8 +68,8 @@ Herdr can see agents in panes, tabs, and workspaces, but communication is curren
 
 ## Progress
 
-- Repository initialized locally on `feature/herdr-team-core`; HT-001 through HT-003 implemented as the first local work unit.
-- Corrective gate work completed: manifest commands now use packaged `herdr-team` and `herdr-team-daemon` binaries; live-shaped `agent: "opencode"` snapshots normalize correctly; CLI/daemon validation and authorization failures return typed `rejected` results; sender and target are both freshly revalidated; consent requires an issued receipt/token; and an injectable process-local deduplication store prevents duplicate prompt submission.
+- Repository initialized locally on the feature branch; HT-001 through HT-003 implemented as the first local work unit.
+- Corrective gate work completed: manifest commands now use packaged Herdr Agent Mesh binaries; live-shaped `agent: "opencode"` snapshots normalize correctly; CLI/daemon validation and authorization failures return typed `rejected` results; sender and target are both freshly revalidated; consent requires an issued receipt/token; and an injectable process-local deduplication store prevents duplicate prompt submission.
 - Corrective evidence after implementation: `bun test` — 22 pass, 0 fail, 47 expect() calls across 5 files; `bunx tsc --noEmit` — exit 0 with no output; `bun run validate:manifest` — required sections and identifiers present; `bun run build` — 5 modules bundled (`dist/cli.js`, `dist/daemon.js`); `bun run validate:pack` — both manifest binaries resolve to packed entrypoints; `npm pack --dry-run` — tarball contains `dist/cli.js` and `dist/daemon.js` (9 files total); `git diff --check` — exit 0 with no output.
 
 ## Next step

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
-  HerdrTeamClient,
+  HerdrAgentMeshClient,
   MemoryDeduplicationStore,
   normalizeHerdrSnapshot,
   type HerdrCommandResult,
@@ -149,7 +149,7 @@ describe("Herdr topology client", () => {
         location: { workspace_id: "w1", tab_id: "w1:t2", pane_id: "w1:p3" },
       },
     })
-    const client = new HerdrTeamClient({ transport: new FakeTransport(snapshot(current, peer, otherTab)), caller })
+    const client = new HerdrAgentMeshClient({ transport: new FakeTransport(snapshot(current, peer, otherTab)), caller })
 
     const roster = await client.discover()
 
@@ -158,7 +158,7 @@ describe("Herdr topology client", () => {
   })
 
   test("requires explicit scope when caller context is unavailable", async () => {
-    const client = new HerdrTeamClient({ transport: new FakeTransport(snapshot(agent())) })
+    const client = new HerdrAgentMeshClient({ transport: new FakeTransport(snapshot(agent())) })
 
     await expect(client.discover()).rejects.toThrow("explicit scope")
   })
@@ -173,7 +173,7 @@ describe("Herdr topology client", () => {
       },
     })
     const scope: ExplicitScope = { kind: "workspaces", workspace_ids: ["w1", "w2"] }
-    const client = new HerdrTeamClient({ transport: new FakeTransport(snapshot(first, second)), caller })
+    const client = new HerdrAgentMeshClient({ transport: new FakeTransport(snapshot(first, second)), caller })
 
     const roster = await client.discover(scope)
 
@@ -183,7 +183,7 @@ describe("Herdr topology client", () => {
 
   test("rejects authorization that does not match the exact target and text", async () => {
     const transport = new FakeTransport(snapshot(agent()), snapshot(agent()), snapshot(agent()))
-    const client = new HerdrTeamClient({ transport, caller })
+    const client = new HerdrAgentMeshClient({ transport, caller })
     const envelope = messageFor(agent(), agent(), { kind: "tab", tab_id: "w1:t1" }, "hello")
     const authorization = issueConsentReceipt({
       message_id: envelope.message_id,
@@ -206,7 +206,7 @@ describe("Herdr topology client", () => {
       },
     })
     const transport = new FakeTransport(snapshot(sender, recipient), snapshot(sender))
-    const client = new HerdrTeamClient({ transport, caller })
+    const client = new HerdrAgentMeshClient({ transport, caller })
     const envelope = messageFor(sender, recipient, { kind: "tab", tab_id: "w1:t1" }, "hello")
     const authorization = authorizationFor(envelope)
 
@@ -217,7 +217,7 @@ describe("Herdr topology client", () => {
   test("passes exact pane and text argv values and reports only submission", async () => {
     const text = "hello; $(must-not-run)\nsecond line"
     const transport = new FakeTransport(snapshot(agent()), snapshot(agent()), snapshot(agent()))
-    const client = new HerdrTeamClient({ transport, caller })
+    const client = new HerdrAgentMeshClient({ transport, caller })
     const envelope = messageFor(agent(), agent(), { kind: "tab", tab_id: "w1:t1" }, text)
 
     const receipt = await client.sendAuthorized(envelope, authorizationFor(envelope))
@@ -239,7 +239,7 @@ describe("Herdr topology client", () => {
       },
     })
     const transport = new FakeTransport(snapshot(staleSender, recipient), snapshot(currentSender, recipient))
-    const client = new HerdrTeamClient({ transport, caller })
+    const client = new HerdrAgentMeshClient({ transport, caller })
     const envelope = messageFor(staleSender, recipient, { kind: "tab", tab_id: "w1:t1" }, "hello")
 
     await expect(client.sendAuthorized(envelope, authorizationFor(envelope))).rejects.toThrow("sender identity changed")
@@ -248,12 +248,12 @@ describe("Herdr topology client", () => {
 
   test("requires a consent receipt issued by the explicit consent factory", async () => {
     const transport = new FakeTransport(snapshot(agent()), snapshot(agent()))
-    const client = new HerdrTeamClient({ transport, caller })
+    const client = new HerdrAgentMeshClient({ transport, caller })
     const envelope = messageFor(agent(), agent(), { kind: "tab", tab_id: "w1:t1" }, "hello")
 
     await expect(client.sendAuthorized(envelope, undefined as unknown as ConsentReceipt)).rejects.toThrow("consent receipt")
     await expect(client.sendAuthorized(envelope, {
-      type: "herdr-team.consent/v1",
+      type: "herdr-agent-mesh.consent/v1",
       token: "fabricated",
       message_id: envelope.message_id,
       target_pane_id: envelope.recipient.location.pane_id,
@@ -265,7 +265,7 @@ describe("Herdr topology client", () => {
   })
 
   test("does not create an envelope with approved consent flags", async () => {
-    const client = new HerdrTeamClient({ transport: new FakeTransport(snapshot(agent())), caller })
+    const client = new HerdrAgentMeshClient({ transport: new FakeTransport(snapshot(agent())), caller })
 
     const envelope = await client.createEnvelope({
       target_pane_id: "w1:p1",
@@ -278,7 +278,7 @@ describe("Herdr topology client", () => {
 
   test("deduplicates the same idempotency key without submitting a second prompt", async () => {
     const transport = new FakeTransport(snapshot(agent()), snapshot(agent()), snapshot(agent()))
-    const client = new HerdrTeamClient({
+    const client = new HerdrAgentMeshClient({
       transport,
       caller,
       deduplicationStore: new MemoryDeduplicationStore(),
@@ -298,7 +298,7 @@ describe("Herdr topology client", () => {
 
 function messageFor(sender: AgentDescriptor, recipient: AgentDescriptor, scope: ExplicitScope, text: string): MessageEnvelope {
   return {
-    schema: "herdr-team.message/v1",
+    schema: "herdr-agent-mesh.message/v1",
     message_id: "msg-1",
     correlation_id: "corr-1",
     idempotency_key: "idem-1",
