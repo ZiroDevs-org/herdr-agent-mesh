@@ -1,0 +1,39 @@
+id = "herdr-team"
+name = "Herdr Team"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Provider-neutral discovery and explicitly authorized directed messages for local Herdr panes."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "discover"
+title = "Discover Herdr topology"
+description = "Read the verified current tab, or an explicitly supplied tab/workspace scope."
+command = ["bun", "run", "src/cli.ts", "discover", "--json"]
+
+[[actions]]
+id = "send"
+title = "Send directed message"
+description = "Send only after reviewing and explicitly authorizing the exact pane and text."
+command = ["bun", "run", "src/cli.ts", "send", "--target-pane", "<pane_id>", "--text", "<text>", "--authorize"]
+
+[[build]]
+command = ["bun", "install"]
+
+[[build]]
+command = ["bun", "run", "build"]
+
+[[panes]]
+id = "herdr-team-daemon"
+title = "Herdr Team daemon"
+placement = "sidebar"
+command = ["bun", "run", "src/daemon.ts"]
+
+[[startup]]
+id = "herdr-team-daemon"
+command = ["bun", "run", "src/daemon.ts"]
+
+[[events]]
+id = "herdr-team-topology"
+event = "topology_changed"
+command = ["bun", "run", "src/cli.ts", "discover", "--json"]

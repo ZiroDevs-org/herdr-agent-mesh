@@ -1,0 +1,34 @@
+{
+  "name": "herdr-team",
+  "version": "0.1.0",
+  "description": "Provider-neutral local routing primitives for directed Herdr team messages.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gentle-ai/herdr-team.git"
+  },
+  "bin": {
+    "herdr-team": "dist/cli.js",
+    "herdr-team-daemon": "dist/daemon.js"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "build": "bun build src/cli.ts src/daemon.ts --outdir dist --target bun --entry-naming [name].js",
+    "validate:manifest": "bun scripts/validate-manifest.ts"
+  },
+  "engines": {
+    "bun": ">=1.1.0",
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "herdr-plugin.toml",
+    "README.md",
+    "docs"
+  ],
+  "devDependencies": {
+    "@types/bun": "^1.4.2"
+  }
+}
