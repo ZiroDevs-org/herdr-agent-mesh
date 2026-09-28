@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   HerdrTeamClient,
+  MemoryDeduplicationStore,
   normalizeHerdrSnapshot,
   type HerdrCommandResult,
   type HerdrSnapshot,
@@ -9,10 +10,11 @@ import {
 } from "../src/herdr-client"
 import {
   DELIVERY_STATE,
+  issueConsentReceipt,
+  type ConsentReceipt,
   type AgentDescriptor,
   type ExplicitScope,
   type MessageEnvelope,
-  type SendAuthorization,
 } from "../src/protocol"
 
 function agent(overrides: Partial<AgentDescriptor> = {}): AgentDescriptor {
@@ -108,6 +110,28 @@ describe("Herdr topology client", () => {
     })
   })
 
+  test("recognizes the live snapshot provider when agent is the string opencode", () => {
+    const normalized = normalizeHerdrSnapshot({
+      protocol: 22,
+      version: "0.9.0",
+      result: {
+        agents: [
+          {
+            workspace_id: "w1",
+            tab_id: "w1:t1",
+            pane_id: "w1:p1",
+            agent_session: { value: "ses-opencode" },
+            agent: "opencode",
+            agent_status: "idle",
+            cwd: "/workspace",
+          },
+        ],
+      },
+    })
+
+    expect(normalized.agents[0]?.identity.provider).toBe("opencode")
+  })
+
   test("defaults to the verified caller tab and never uses focus", async () => {
     const current = agent({ metadata: { label: "Current", title: "", cwd: "/a", focused: false } })
     const peer = agent({
@@ -158,26 +182,32 @@ describe("Herdr topology client", () => {
   })
 
   test("rejects authorization that does not match the exact target and text", async () => {
-    const transport = new FakeTransport(snapshot(agent()), snapshot(agent()))
+    const transport = new FakeTransport(snapshot(agent()), snapshot(agent()), snapshot(agent()))
     const client = new HerdrTeamClient({ transport, caller })
     const envelope = messageFor(agent(), agent(), { kind: "tab", tab_id: "w1:t1" }, "hello")
-    const authorization: SendAuthorization = {
-      authorized: true,
+    const authorization = issueConsentReceipt({
       message_id: envelope.message_id,
-      target_pane_id: "w1:p1",
+      target_pane_id: envelope.recipient.location.pane_id,
       scope: envelope.scope,
       text: "different text",
-      authorized_at: envelope.created_at,
-    }
+    })
 
     await expect(client.sendAuthorized(envelope, authorization)).rejects.toThrow("message text")
     expect(transport.prompts).toHaveLength(0)
   })
 
   test("revalidates a target against a fresh snapshot before transport", async () => {
-    const transport = new FakeTransport(snapshot(agent()), snapshot())
+    const sender = agent()
+    const recipient = agent({
+      identity: {
+        provider: "gemini-cli",
+        session_id: "ses-target",
+        location: { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p2" },
+      },
+    })
+    const transport = new FakeTransport(snapshot(sender, recipient), snapshot(sender))
     const client = new HerdrTeamClient({ transport, caller })
-    const envelope = messageFor(agent(), agent(), { kind: "tab", tab_id: "w1:t1" }, "hello")
+    const envelope = messageFor(sender, recipient, { kind: "tab", tab_id: "w1:t1" }, "hello")
     const authorization = authorizationFor(envelope)
 
     await expect(client.sendAuthorized(envelope, authorization)).rejects.toThrow("not an eligible target")
@@ -186,7 +216,7 @@ describe("Herdr topology client", () => {
 
   test("passes exact pane and text argv values and reports only submission", async () => {
     const text = "hello; $(must-not-run)\nsecond line"
-    const transport = new FakeTransport(snapshot(agent()), snapshot(agent()))
+    const transport = new FakeTransport(snapshot(agent()), snapshot(agent()), snapshot(agent()))
     const client = new HerdrTeamClient({ transport, caller })
     const envelope = messageFor(agent(), agent(), { kind: "tab", tab_id: "w1:t1" }, text)
 
@@ -196,6 +226,73 @@ describe("Herdr topology client", () => {
     expect(receipt.state).toBe(DELIVERY_STATE.SUBMITTED_TO_HERDR)
     expect(receipt.state).not.toBe(DELIVERY_STATE.DELIVERED)
     expect(receipt.state).not.toBe(DELIVERY_STATE.PROCESSED)
+  })
+
+  test("revalidates the sender identity against the fresh snapshot", async () => {
+    const staleSender = agent()
+    const currentSender = agent({ identity: { ...staleSender.identity, session_id: "ses-new" } })
+    const recipient = agent({
+      identity: {
+        provider: "gemini-cli",
+        session_id: "ses-target",
+        location: { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p2" },
+      },
+    })
+    const transport = new FakeTransport(snapshot(staleSender, recipient), snapshot(currentSender, recipient))
+    const client = new HerdrTeamClient({ transport, caller })
+    const envelope = messageFor(staleSender, recipient, { kind: "tab", tab_id: "w1:t1" }, "hello")
+
+    await expect(client.sendAuthorized(envelope, authorizationFor(envelope))).rejects.toThrow("sender identity changed")
+    expect(transport.prompts).toHaveLength(0)
+  })
+
+  test("requires a consent receipt issued by the explicit consent factory", async () => {
+    const transport = new FakeTransport(snapshot(agent()), snapshot(agent()))
+    const client = new HerdrTeamClient({ transport, caller })
+    const envelope = messageFor(agent(), agent(), { kind: "tab", tab_id: "w1:t1" }, "hello")
+
+    await expect(client.sendAuthorized(envelope, undefined as unknown as ConsentReceipt)).rejects.toThrow("consent receipt")
+    await expect(client.sendAuthorized(envelope, {
+      type: "herdr-team.consent/v1",
+      token: "fabricated",
+      message_id: envelope.message_id,
+      target_pane_id: envelope.recipient.location.pane_id,
+      scope: envelope.scope,
+      text: envelope.body.text,
+      approved_at: envelope.created_at,
+    })).rejects.toThrow("consent receipt")
+    expect(transport.prompts).toHaveLength(0)
+  })
+
+  test("does not create an envelope with approved consent flags", async () => {
+    const client = new HerdrTeamClient({ transport: new FakeTransport(snapshot(agent())), caller })
+
+    const envelope = await client.createEnvelope({
+      target_pane_id: "w1:p1",
+      text: "hello",
+      scope: { kind: "tab", tab_id: "w1:t1" },
+    })
+
+    expect("consent" in envelope).toBe(false)
+  })
+
+  test("deduplicates the same idempotency key without submitting a second prompt", async () => {
+    const transport = new FakeTransport(snapshot(agent()), snapshot(agent()), snapshot(agent()))
+    const client = new HerdrTeamClient({
+      transport,
+      caller,
+      deduplicationStore: new MemoryDeduplicationStore(),
+    })
+    const envelope = messageFor(agent(), agent(), { kind: "tab", tab_id: "w1:t1" }, "hello")
+    const consent = authorizationFor(envelope)
+
+    const first = await client.sendAuthorized(envelope, consent)
+    const second = await client.sendAuthorized(envelope, consent)
+
+    expect(first.state).toBe(DELIVERY_STATE.SUBMITTED_TO_HERDR)
+    expect(second.state).toBe(DELIVERY_STATE.SUBMITTED_TO_HERDR)
+    expect(second.detail).toContain("idempotency")
+    expect(transport.prompts).toHaveLength(1)
   })
 })
 
@@ -210,21 +307,14 @@ function messageFor(sender: AgentDescriptor, recipient: AgentDescriptor, scope: 
     scope,
     body: { text },
     created_at: "2026-09-28T00:00:00.000Z",
-    consent: {
-      target_authorized: true,
-      content_authorized: true,
-      authorized_at: "2026-09-28T00:00:00.000Z",
-    },
   }
 }
 
-function authorizationFor(envelope: MessageEnvelope): SendAuthorization {
-  return {
-    authorized: true,
+function authorizationFor(envelope: MessageEnvelope): ConsentReceipt {
+  return issueConsentReceipt({
     message_id: envelope.message_id,
     target_pane_id: envelope.recipient.location.pane_id,
     scope: envelope.scope,
     text: envelope.body.text,
-    authorized_at: envelope.consent.authorized_at,
-  }
+  })
 }

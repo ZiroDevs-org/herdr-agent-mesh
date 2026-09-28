@@ -65,7 +65,10 @@ describe("Herdr Team CLI", () => {
     })
 
     expect(code).toBe(2)
-    expect(output[0]).toContain("--authorize")
+    expect(JSON.parse(output[0])).toMatchObject({
+      state: "rejected",
+      reason: { code: "authorization_required" },
+    })
     expect(transport.prompts).toHaveLength(0)
   })
 

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 export const PROTOCOL = {
   NAME: "herdr-team",
   MESSAGE_SCHEMA: "herdr-team.message/v1",
@@ -28,9 +30,28 @@ export const DELIVERY_STATE = {
   UNKNOWN: "unknown",
 } as const
 
+export const CONSENT = {
+  RECEIPT_TYPE: "herdr-team.consent/v1",
+} as const
+
+export const REJECTION_CODE = {
+  INVALID_REQUEST: "invalid_request",
+  INVALID_ARGUMENT: "invalid_argument",
+  INVALID_SCOPE: "invalid_scope",
+  INVALID_IDENTITY: "invalid_identity",
+  MISSING_ARGUMENT: "missing_argument",
+  AUTHORIZATION_REQUIRED: "authorization_required",
+  CONSENT_INVALID: "consent_invalid",
+  TARGET_NOT_ELIGIBLE: "target_not_eligible",
+  TARGET_STALE: "target_stale",
+  SENDER_STALE: "sender_stale",
+  OUT_OF_SCOPE: "out_of_scope",
+} as const
+
 export type ScopeKind = (typeof SCOPE_KIND)[keyof typeof SCOPE_KIND]
 export type AgentAvailability = (typeof AGENT_AVAILABILITY)[keyof typeof AGENT_AVAILABILITY]
 export type DeliveryState = (typeof DELIVERY_STATE)[keyof typeof DELIVERY_STATE]
+export type RejectionCode = (typeof REJECTION_CODE)[keyof typeof REJECTION_CODE]
 
 export interface HerdrLocation {
   workspace_id: string
@@ -81,12 +102,6 @@ export interface MessageBody {
   text: string
 }
 
-export interface MessageConsent {
-  target_authorized: true
-  content_authorized: true
-  authorized_at: string
-}
-
 export interface MessageEnvelope {
   schema: typeof PROTOCOL.MESSAGE_SCHEMA
   message_id: string
@@ -97,24 +112,65 @@ export interface MessageEnvelope {
   scope: ExplicitScope
   body: MessageBody
   created_at: string
-  consent: MessageConsent
 }
 
-export interface SendAuthorization {
-  authorized: true
+export interface ConsentRequest {
   message_id: string
   target_pane_id: string
   scope: ExplicitScope
   text: string
-  authorized_at: string
+}
+
+export interface ConsentReceipt {
+  type: typeof CONSENT.RECEIPT_TYPE
+  token: string
+  message_id: string
+  target_pane_id: string
+  scope: ExplicitScope
+  text: string
+  approved_at: string
+}
+
+export interface ConsentFactoryOptions {
+  now?: () => Date
+  makeToken?: () => string
 }
 
 export interface DeliveryReceipt {
   message_id: string
-  state: DeliveryState
+  state: Exclude<DeliveryState, typeof DELIVERY_STATE.REJECTED>
   recorded_at: string
   detail?: string
 }
+
+export interface DeliveryRejection {
+  code: RejectionCode
+  message: string
+  details?: Readonly<Record<string, string>>
+}
+
+export interface RejectedDeliveryResult {
+  message_id?: string
+  state: typeof DELIVERY_STATE.REJECTED
+  recorded_at: string
+  reason: DeliveryRejection
+}
+
+export type PublicDeliveryResult = DeliveryReceipt | RejectedDeliveryResult
+
+export class HerdrRejectionError extends Error {
+  readonly code: RejectionCode
+  readonly details: Readonly<Record<string, string>> | undefined
+
+  constructor(code: RejectionCode, message: string, details?: Readonly<Record<string, string>>) {
+    super(message)
+    this.name = "HerdrRejectionError"
+    this.code = code
+    this.details = details
+  }
+}
+
+const issuedConsentReceipts = new Map<string, ConsentReceipt>()
 
 const DELIVERY_TRANSITIONS: Record<DeliveryState, readonly DeliveryState[]> = {
   [DELIVERY_STATE.REJECTED]: [DELIVERY_STATE.REJECTED],
@@ -161,57 +217,118 @@ export function canTransitionDeliveryState(from: DeliveryState, to: DeliveryStat
 }
 
 export function validateHerdrLocation(location: HerdrLocation): void {
-  requireNonEmpty(location.workspace_id, "workspace_id")
-  requireNonEmpty(location.tab_id, "tab_id")
-  requireNonEmpty(location.pane_id, "pane_id")
+  requireNonEmpty(location.workspace_id, "workspace_id", REJECTION_CODE.INVALID_IDENTITY)
+  requireNonEmpty(location.tab_id, "tab_id", REJECTION_CODE.INVALID_IDENTITY)
+  requireNonEmpty(location.pane_id, "pane_id", REJECTION_CODE.INVALID_IDENTITY)
 }
 
 export function validateAgentIdentity(identity: AgentIdentity): void {
-  requireNonEmpty(identity.provider, "provider")
-  requireNonEmpty(identity.session_id, "session_id")
+  requireNonEmpty(identity.provider, "provider", REJECTION_CODE.INVALID_IDENTITY)
+  requireNonEmpty(identity.session_id, "session_id", REJECTION_CODE.INVALID_IDENTITY)
   validateHerdrLocation(identity.location)
 }
 
 export function validateExplicitScope(scope: ExplicitScope): void {
   if (scope.kind === SCOPE_KIND.TAB) {
-    requireNonEmpty(scope.tab_id, "tab_id")
+    requireNonEmpty(scope.tab_id, "tab_id", REJECTION_CODE.INVALID_SCOPE)
     return
   }
 
   if (scope.kind === SCOPE_KIND.WORKSPACES) {
-    if (scope.workspace_ids.length === 0) throw new Error("workspace_ids must not be empty")
-    for (const workspaceId of scope.workspace_ids) requireNonEmpty(workspaceId, "workspace_ids")
+    if (scope.workspace_ids.length === 0) {
+      throw new HerdrRejectionError(REJECTION_CODE.INVALID_SCOPE, "workspace_ids must not be empty")
+    }
+    for (const workspaceId of scope.workspace_ids) {
+      requireNonEmpty(workspaceId, "workspace_ids", REJECTION_CODE.INVALID_SCOPE)
+    }
     return
   }
 
-  throw new Error("scope kind is not supported")
+  throw new HerdrRejectionError(REJECTION_CODE.INVALID_SCOPE, "scope kind is not supported")
 }
 
 export function validateMessageEnvelope(envelope: MessageEnvelope): void {
-  if (envelope.schema !== PROTOCOL.MESSAGE_SCHEMA) throw new Error("unsupported message schema")
-  requireNonEmpty(envelope.message_id, "message_id")
-  requireNonEmpty(envelope.correlation_id, "correlation_id")
-  requireNonEmpty(envelope.idempotency_key, "idempotency_key")
-  requireNonEmpty(envelope.body.text, "message text")
+  if (envelope.schema !== PROTOCOL.MESSAGE_SCHEMA) {
+    throw new HerdrRejectionError(REJECTION_CODE.INVALID_REQUEST, "unsupported message schema")
+  }
+  if ("consent" in envelope) {
+    throw new HerdrRejectionError(REJECTION_CODE.INVALID_REQUEST, "envelope must not carry consent flags")
+  }
+  requireNonEmpty(envelope.message_id, "message_id", REJECTION_CODE.INVALID_ARGUMENT)
+  requireNonEmpty(envelope.correlation_id, "correlation_id", REJECTION_CODE.INVALID_ARGUMENT)
+  requireNonEmpty(envelope.idempotency_key, "idempotency_key", REJECTION_CODE.INVALID_ARGUMENT)
+  requireNonEmpty(envelope.body.text, "message text", REJECTION_CODE.INVALID_ARGUMENT)
+  requireNonEmpty(envelope.created_at, "created_at", REJECTION_CODE.INVALID_ARGUMENT)
   validateAgentIdentity(envelope.sender)
   validateAgentIdentity(envelope.recipient)
   validateExplicitScope(envelope.scope)
-  if (envelope.consent.target_authorized !== true || envelope.consent.content_authorized !== true) {
-    throw new Error("message consent must explicitly authorize target and content")
-  }
-  requireNonEmpty(envelope.consent.authorized_at, "authorized_at")
 }
 
-export function validateSendAuthorization(envelope: MessageEnvelope, authorization: SendAuthorization): void {
-  validateMessageEnvelope(envelope)
-  if (authorization.authorized !== true) throw new Error("message authorization is required")
-  if (authorization.message_id !== envelope.message_id) throw new Error("authorization message_id does not match")
-  if (authorization.target_pane_id !== envelope.recipient.location.pane_id) {
-    throw new Error("authorization target pane does not match message recipient")
+export function issueConsentReceipt(request: ConsentRequest, options: ConsentFactoryOptions = {}): ConsentReceipt {
+  requireNonEmpty(request.message_id, "message_id", REJECTION_CODE.INVALID_ARGUMENT)
+  requireNonEmpty(request.target_pane_id, "target_pane_id", REJECTION_CODE.INVALID_ARGUMENT)
+  requireNonEmpty(request.text, "message text", REJECTION_CODE.INVALID_ARGUMENT)
+  validateExplicitScope(request.scope)
+
+  const receipt: ConsentReceipt = {
+    type: CONSENT.RECEIPT_TYPE,
+    token: options.makeToken?.() ?? randomUUID(),
+    message_id: request.message_id,
+    target_pane_id: request.target_pane_id,
+    scope: request.scope,
+    text: request.text,
+    approved_at: (options.now?.() ?? new Date()).toISOString(),
   }
-  if (authorization.text !== envelope.body.text) throw new Error("authorization message text does not match")
-  if (!sameScope(authorization.scope, envelope.scope)) throw new Error("authorization scope does not match")
-  requireNonEmpty(authorization.authorized_at, "authorized_at")
+  requireNonEmpty(receipt.token, "consent token", REJECTION_CODE.CONSENT_INVALID)
+  issuedConsentReceipts.set(receipt.token, receipt)
+  return receipt
+}
+
+export function validateConsentReceipt(envelope: MessageEnvelope, value: unknown): asserts value is ConsentReceipt {
+  if (!isConsentReceipt(value)) {
+    throw new HerdrRejectionError(REJECTION_CODE.CONSENT_INVALID, "consent receipt is required")
+  }
+  const issued = issuedConsentReceipts.get(value.token)
+  if (issued === undefined || !sameConsentReceipt(issued, value)) {
+    throw new HerdrRejectionError(REJECTION_CODE.CONSENT_INVALID, "consent receipt was not issued for this approval")
+  }
+  if (value.message_id !== envelope.message_id) {
+    throw new HerdrRejectionError(REJECTION_CODE.CONSENT_INVALID, "consent receipt message_id does not match")
+  }
+  if (value.target_pane_id !== envelope.recipient.location.pane_id) {
+    throw new HerdrRejectionError(REJECTION_CODE.CONSENT_INVALID, "consent receipt target pane does not match")
+  }
+  if (value.text !== envelope.body.text) {
+    throw new HerdrRejectionError(REJECTION_CODE.CONSENT_INVALID, "consent receipt message text does not match")
+  }
+  if (!sameScope(value.scope, envelope.scope)) {
+    throw new HerdrRejectionError(REJECTION_CODE.CONSENT_INVALID, "consent receipt scope does not match")
+  }
+}
+
+export function createRejectedDeliveryResult(
+  error: unknown,
+  now: () => Date = () => new Date(),
+  messageId?: string,
+): RejectedDeliveryResult {
+  const reason: DeliveryRejection = error instanceof HerdrRejectionError
+    ? { code: error.code, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) }
+    : { code: REJECTION_CODE.INVALID_REQUEST, message: error instanceof Error ? error.message : "invalid request" }
+  return {
+    ...(messageId === undefined ? {} : { message_id: messageId }),
+    state: DELIVERY_STATE.REJECTED,
+    recorded_at: now().toISOString(),
+    reason,
+  }
+}
+
+function sameConsentReceipt(left: ConsentReceipt, right: ConsentReceipt): boolean {
+  return left.type === right.type
+    && left.message_id === right.message_id
+    && left.target_pane_id === right.target_pane_id
+    && left.text === right.text
+    && left.approved_at === right.approved_at
+    && sameScope(left.scope, right.scope)
 }
 
 function sameScope(left: ExplicitScope, right: ExplicitScope): boolean {
@@ -224,6 +341,24 @@ function sameScope(left: ExplicitScope, right: ExplicitScope): boolean {
   return false
 }
 
-function requireNonEmpty(value: string, field: string): void {
-  if (typeof value !== "string" || value.trim() === "") throw new Error(`${field} must not be empty`)
+function isConsentReceipt(value: unknown): value is ConsentReceipt {
+  return isRecord(value)
+    && value.type === CONSENT.RECEIPT_TYPE
+    && typeof value.token === "string"
+    && typeof value.message_id === "string"
+    && typeof value.target_pane_id === "string"
+    && typeof value.text === "string"
+    && typeof value.approved_at === "string"
+    && isRecord(value.scope)
+    && (value.scope.kind === SCOPE_KIND.TAB || value.scope.kind === SCOPE_KIND.WORKSPACES)
+}
+
+function requireNonEmpty(value: string, field: string, code: RejectionCode): void {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new HerdrRejectionError(code, `${field} must not be empty`)
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }

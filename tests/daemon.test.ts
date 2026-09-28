@@ -46,7 +46,20 @@ describe("Herdr Team daemon", () => {
       id: "d2", command: "send", target_pane_id: "w1:p1", text: "hello",
     }, { env, transport: new FakeTransport() })
 
-    expect(response).toMatchObject({ id: "d2", ok: false })
-    expect(response.error).toContain("authorize")
+    expect(response).toMatchObject({
+      id: "d2",
+      ok: false,
+      result: { state: "rejected", reason: { code: "authorization_required" } },
+    })
+  })
+
+  test("returns a typed rejected result for invalid daemon input", async () => {
+    const response = await handleDaemonRequest({ id: "d3", command: "send", text: "hello" }, { env, transport: new FakeTransport() })
+
+    expect(response).toMatchObject({
+      id: "d3",
+      ok: false,
+      result: { state: "rejected", reason: { code: "missing_argument" } },
+    })
   })
 })

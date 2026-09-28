@@ -1,4 +1,5 @@
 import type { HerdrCallerContext } from "./herdr-client"
+import { HerdrRejectionError, REJECTION_CODE } from "./protocol"
 
 export const HERDR_CONTEXT_ENV = {
   WORKSPACE: "HERDR_WORKSPACE_ID",
@@ -14,7 +15,10 @@ export function readHerdrCallerContext(env: NodeJS.ProcessEnv = process.env): He
   const present = [workspaceId, tabId, paneId].filter((value) => value !== undefined).length
 
   if (present === 0) return undefined
-  if (present !== 3) throw new Error("Herdr caller context is incomplete; provide an explicit scope or run inside Herdr")
+  if (present !== 3) throw new HerdrRejectionError(
+    REJECTION_CODE.INVALID_IDENTITY,
+    "Herdr caller context is incomplete; provide an explicit scope or run inside Herdr",
+  )
 
   return {
     location: {

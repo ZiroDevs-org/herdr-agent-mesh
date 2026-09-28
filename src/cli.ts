@@ -1,11 +1,27 @@
 import { readHerdrCallerContext } from "./context"
-import { HerdrCliTransport, HerdrTeamClient, type HerdrTransport } from "./herdr-client"
-import type { ExplicitScope, SendAuthorization } from "./protocol"
+import {
+  HerdrCliTransport,
+  HerdrTeamClient,
+  type DeduplicationStore,
+  type HerdrTransport,
+} from "./herdr-client"
+import {
+  createRejectedDeliveryResult,
+  HerdrRejectionError,
+  issueConsentReceipt,
+  REJECTION_CODE,
+  type ConsentReceipt,
+  type ConsentRequest,
+  type ExplicitScope,
+  type RejectionCode,
+} from "./protocol"
 import { SCOPE_KIND } from "./protocol"
 
 export interface CliDependencies {
   env?: NodeJS.ProcessEnv
   transport?: HerdrTransport
+  deduplicationStore?: DeduplicationStore
+  issueConsent?: (request: ConsentRequest) => ConsentReceipt | Promise<ConsentReceipt>
   now?: () => Date
   makeId?: () => string
   write?: (line: string) => void
@@ -22,7 +38,11 @@ interface CliOptions {
   authorize: boolean
 }
 
-class CliUsageError extends Error {}
+class CliUsageError extends HerdrRejectionError {
+  constructor(message: string, code: RejectionCode = REJECTION_CODE.INVALID_REQUEST) {
+    super(code, message)
+  }
+}
 
 export async function runCli(argv: string[], dependencies: CliDependencies = {}): Promise<number> {
   const write = dependencies.write ?? ((line: string) => process.stdout.write(`${line}\n`))
@@ -40,6 +60,7 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
     const client = new HerdrTeamClient({
       transport: dependencies.transport ?? new HerdrCliTransport(),
       caller,
+      deduplicationStore: dependencies.deduplicationStore,
       now: dependencies.now,
       makeId: dependencies.makeId,
     })
@@ -51,9 +72,15 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
     }
 
     if (command === "send") {
-      if (options.target_pane_id === undefined) throw new CliUsageError("send requires --target-pane <pane_id>")
-      if (options.text === undefined) throw new CliUsageError("send requires --text <message>")
-      if (!options.authorize) throw new CliUsageError("send requires --authorize after reviewing the exact target and text")
+      if (options.target_pane_id === undefined) {
+        throw new CliUsageError("send requires --target-pane <pane_id>", REJECTION_CODE.MISSING_ARGUMENT)
+      }
+      if (options.text === undefined) {
+        throw new CliUsageError("send requires --text <message>", REJECTION_CODE.MISSING_ARGUMENT)
+      }
+      if (!options.authorize) {
+        throw new CliUsageError("send requires --authorize after reviewing the exact target and text", REJECTION_CODE.AUTHORIZATION_REQUIRED)
+      }
 
       const envelope = await client.createEnvelope({
         target_pane_id: options.target_pane_id,
@@ -63,23 +90,22 @@ export async function runCli(argv: string[], dependencies: CliDependencies = {})
         correlation_id: options.correlation_id,
         idempotency_key: options.idempotency_key,
       })
-      const authorization: SendAuthorization = {
-        authorized: true,
+      const issueConsent = dependencies.issueConsent ?? ((request: ConsentRequest) => issueConsentReceipt(request))
+      const consent = await issueConsent({
         message_id: envelope.message_id,
         target_pane_id: envelope.recipient.location.pane_id,
         scope: envelope.scope,
         text: envelope.body.text,
-        authorized_at: envelope.consent.authorized_at,
-      }
-      const result = await client.sendAuthorized(envelope, authorization)
+      })
+      const result = await client.sendAuthorized(envelope, consent)
       write(JSON.stringify(result, null, 2))
       return result.state === "failed" || result.state === "unknown" ? 1 : 0
     }
 
     throw new CliUsageError(`unknown command '${command}'`)
   } catch (error) {
-    const message = error instanceof Error ? error.message : "unknown error"
-    write(`error: ${message}`)
+    const rejection = createRejectedDeliveryResult(error, dependencies.now, optionValue(arguments_, "--message-id"))
+    write(JSON.stringify(rejection, null, 2))
     return error instanceof CliUsageError ? 2 : 1
   }
 }
@@ -93,7 +119,9 @@ function parseOptions(argv: string[]): CliOptions {
       continue
     }
     const value = argv[index + 1]
-    if (value === undefined || value.startsWith("--")) throw new CliUsageError(`${argument} requires a value`)
+    if (value === undefined || value.startsWith("--")) {
+      throw new CliUsageError(`${argument} requires a value`, REJECTION_CODE.MISSING_ARGUMENT)
+    }
     if (argument === "--tab-id") {
       if (options.tab_id !== undefined) throw new CliUsageError("--tab-id may be provided once")
       options.tab_id = value
@@ -138,6 +166,12 @@ function usage(): string {
     "Default discovery scope is the verified current Herdr tab. Cross-tab and cross-workspace scope must be explicit.",
     "Send reports submitted_to_herdr only; it does not claim delivery or processing.",
   ].join("\n")
+}
+
+function optionValue(argv: string[], name: string): string | undefined {
+  const index = argv.indexOf(name)
+  const value = index >= 0 ? argv[index + 1] : undefined
+  return value !== undefined && !value.startsWith("--") ? value : undefined
 }
 
 if (import.meta.main) {

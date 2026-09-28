@@ -1,6 +1,20 @@
 import { readHerdrCallerContext } from "./context"
-import { HerdrCliTransport, HerdrTeamClient, type HerdrTransport } from "./herdr-client"
-import type { ExplicitScope, SendAuthorization } from "./protocol"
+import {
+  HerdrCliTransport,
+  HerdrTeamClient,
+  MemoryDeduplicationStore,
+  type DeduplicationStore,
+  type HerdrTransport,
+} from "./herdr-client"
+import {
+  createRejectedDeliveryResult,
+  HerdrRejectionError,
+  issueConsentReceipt,
+  REJECTION_CODE,
+  type ConsentReceipt,
+  type ConsentRequest,
+  type ExplicitScope,
+} from "./protocol"
 import { SCOPE_KIND, validateExplicitScope } from "./protocol"
 
 export interface DaemonRequest {
@@ -25,19 +39,25 @@ export interface DaemonResponse {
 export interface DaemonDependencies {
   env?: NodeJS.ProcessEnv
   transport?: HerdrTransport
+  deduplicationStore?: DeduplicationStore
+  issueConsent?: (request: ConsentRequest) => ConsentReceipt | Promise<ConsentReceipt>
   now?: () => Date
   makeId?: () => string
 }
+
+const DAEMON_DEDUPLICATION_STORE = new MemoryDeduplicationStore()
 
 export async function handleDaemonRequest(
   input: unknown,
   dependencies: DaemonDependencies = {},
 ): Promise<DaemonResponse> {
-  const request = parseRequest(input)
+  const id = requestId(input)
   try {
+    const request = parseRequest(input)
     const client = new HerdrTeamClient({
       transport: dependencies.transport ?? new HerdrCliTransport(),
       caller: readHerdrCallerContext(dependencies.env ?? process.env),
+      deduplicationStore: dependencies.deduplicationStore ?? DAEMON_DEDUPLICATION_STORE,
       now: dependencies.now,
       makeId: dependencies.makeId,
     })
@@ -46,9 +66,15 @@ export async function handleDaemonRequest(
       return { id: request.id, ok: true, result: await client.discover(request.scope) }
     }
 
-    if (request.target_pane_id === undefined) throw new Error("send requires target_pane_id")
-    if (request.text === undefined) throw new Error("send requires text")
-    if (request.authorize !== true) throw new Error("send requires authorize: true")
+    if (request.target_pane_id === undefined) {
+      throw new HerdrRejectionError(REJECTION_CODE.MISSING_ARGUMENT, "send requires target_pane_id")
+    }
+    if (request.text === undefined) {
+      throw new HerdrRejectionError(REJECTION_CODE.MISSING_ARGUMENT, "send requires text")
+    }
+    if (request.authorize !== true) {
+      throw new HerdrRejectionError(REJECTION_CODE.AUTHORIZATION_REQUIRED, "send requires authorize: true")
+    }
 
     const envelope = await client.createEnvelope({
       target_pane_id: request.target_pane_id,
@@ -58,17 +84,20 @@ export async function handleDaemonRequest(
       correlation_id: request.correlation_id,
       idempotency_key: request.idempotency_key,
     })
-    const authorization: SendAuthorization = {
-      authorized: true,
+    const issueConsent = dependencies.issueConsent ?? ((consentRequest: ConsentRequest) => issueConsentReceipt(consentRequest))
+    const consent = await issueConsent({
       message_id: envelope.message_id,
       target_pane_id: envelope.recipient.location.pane_id,
       scope: envelope.scope,
       text: envelope.body.text,
-      authorized_at: envelope.consent.authorized_at,
-    }
-    return { id: request.id, ok: true, result: await client.sendAuthorized(envelope, authorization) }
+    })
+    return { id: request.id, ok: true, result: await client.sendAuthorized(envelope, consent) }
   } catch (error) {
-    return { id: request.id, ok: false, error: error instanceof Error ? error.message : "unknown error" }
+    return {
+      id,
+      ok: false,
+      result: createRejectedDeliveryResult(error, dependencies.now, messageId(input)),
+    }
   }
 }
 
@@ -86,7 +115,10 @@ export async function runDaemon(
       response = {
         id: "unknown",
         ok: false,
-        error: error instanceof Error ? error.message : "invalid daemon request",
+        result: createRejectedDeliveryResult(
+          new HerdrRejectionError(REJECTION_CODE.INVALID_REQUEST, error instanceof Error ? error.message : "invalid daemon request"),
+          dependencies.now,
+        ),
       }
     }
     write(JSON.stringify(response))
@@ -94,11 +126,13 @@ export async function runDaemon(
 }
 
 function parseRequest(input: unknown): DaemonRequest {
-  if (!isRecord(input)) throw new Error("daemon request must be an object")
+  if (!isRecord(input)) throw new HerdrRejectionError(REJECTION_CODE.INVALID_REQUEST, "daemon request must be an object")
   const id = stringValue(input.id)
   const command = stringValue(input.command)
-  if (id === undefined) throw new Error("daemon request requires id")
-  if (command !== "discover" && command !== "send") throw new Error("daemon command must be discover or send")
+  if (id === undefined) throw new HerdrRejectionError(REJECTION_CODE.MISSING_ARGUMENT, "daemon request requires id")
+  if (command !== "discover" && command !== "send") {
+    throw new HerdrRejectionError(REJECTION_CODE.INVALID_ARGUMENT, "daemon command must be discover or send")
+  }
 
   const scope = parseScope(input.scope)
   return {
@@ -116,7 +150,7 @@ function parseRequest(input: unknown): DaemonRequest {
 
 function parseScope(input: unknown): ExplicitScope | undefined {
   if (input === undefined) return undefined
-  if (!isRecord(input)) throw new Error("scope must be an object")
+  if (!isRecord(input)) throw new HerdrRejectionError(REJECTION_CODE.INVALID_SCOPE, "scope must be an object")
   const kind = stringValue(input.kind)
   if (kind === SCOPE_KIND.TAB && typeof input.tab_id === "string") {
     const scope = { kind: SCOPE_KIND.TAB, tab_id: input.tab_id }
@@ -129,7 +163,17 @@ function parseScope(input: unknown): ExplicitScope | undefined {
     validateExplicitScope(scope)
     return scope
   }
-  throw new Error("scope must contain a valid tab_id or workspace_ids")
+  throw new HerdrRejectionError(REJECTION_CODE.INVALID_SCOPE, "scope must contain a valid tab_id or workspace_ids")
+}
+
+function requestId(input: unknown): string {
+  return isRecord(input) && typeof input.id === "string" && input.id.trim() !== "" ? input.id : "unknown"
+}
+
+function messageId(input: unknown): string | undefined {
+  return isRecord(input) && typeof input.message_id === "string" && input.message_id.trim() !== ""
+    ? input.message_id
+    : undefined
 }
 
 function stringValue(value: unknown): string | undefined {

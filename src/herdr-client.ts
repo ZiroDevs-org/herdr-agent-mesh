@@ -5,19 +5,22 @@ import type { Readable } from "node:stream"
 import {
   AGENT_AVAILABILITY,
   DELIVERY_STATE,
+  HerdrRejectionError,
+  REJECTION_CODE,
   type AgentDescriptor,
   type AgentIdentity,
+  type ConsentReceipt,
   type DeliveryReceipt,
   type ExplicitScope,
   type HerdrLocation,
   type MessageEnvelope,
-  type SendAuthorization,
   PROTOCOL,
   SCOPE_KIND,
   validateAgentIdentity,
+  validateConsentReceipt,
   validateExplicitScope,
   validateHerdrLocation,
-  validateSendAuthorization,
+  validateMessageEnvelope,
 } from "./protocol"
 
 export const HERDR_ENV = "HERDR_ENV"
@@ -67,8 +70,35 @@ export interface HerdrCallerContext {
 export interface HerdrTeamClientOptions {
   transport: HerdrTransport
   caller?: HerdrCallerContext
+  deduplicationStore?: DeduplicationStore
   now?: () => Date
   makeId?: () => string
+}
+
+export interface IdempotencyClaim {
+  acquired: boolean
+  receipt?: HerdrDeliveryReceipt
+}
+
+export interface DeduplicationStore {
+  claim(idempotencyKey: string): Promise<IdempotencyClaim>
+  complete(idempotencyKey: string, receipt: HerdrDeliveryReceipt): Promise<void>
+}
+
+export class MemoryDeduplicationStore implements DeduplicationStore {
+  private readonly records = new Map<string, HerdrDeliveryReceipt | undefined>()
+
+  async claim(idempotencyKey: string): Promise<IdempotencyClaim> {
+    if (!this.records.has(idempotencyKey)) {
+      this.records.set(idempotencyKey, undefined)
+      return { acquired: true }
+    }
+    return { acquired: false, receipt: this.records.get(idempotencyKey) }
+  }
+
+  async complete(idempotencyKey: string, receipt: HerdrDeliveryReceipt): Promise<void> {
+    this.records.set(idempotencyKey, receipt)
+  }
 }
 
 export interface DiscoveryResult {
@@ -144,12 +174,14 @@ export class HerdrCliTransport implements HerdrTransport {
 export class HerdrTeamClient {
   private readonly transport: HerdrTransport
   private readonly caller: HerdrCallerContext | undefined
+  private readonly deduplicationStore: DeduplicationStore
   private readonly now: () => Date
   private readonly makeId: () => string
 
   constructor(options: HerdrTeamClientOptions) {
     this.transport = options.transport
     this.caller = options.caller
+    this.deduplicationStore = options.deduplicationStore ?? new MemoryDeduplicationStore()
     this.now = options.now ?? (() => new Date())
     this.makeId = options.makeId ?? randomUUID
     if (this.caller !== undefined) validateHerdrLocation(this.caller.location)
@@ -183,29 +215,46 @@ export class HerdrTeamClient {
       scope,
       body: { text: requireText(request.text) },
       created_at: createdAt,
-      consent: {
-        target_authorized: true,
-        content_authorized: true,
-        authorized_at: createdAt,
-      },
     }
   }
 
-  async sendAuthorized(envelope: MessageEnvelope, authorization: SendAuthorization): Promise<HerdrDeliveryReceipt> {
-    validateSendAuthorization(envelope, authorization)
+  async sendAuthorized(envelope: MessageEnvelope, consent: ConsentReceipt): Promise<HerdrDeliveryReceipt> {
+    validateMessageEnvelope(envelope)
+    validateConsentReceipt(envelope, consent)
 
     const validationSnapshot = await this.readSnapshot()
+    findExactSender(validationSnapshot.agents, envelope.sender)
     findExactTarget(validationSnapshot.agents, envelope, envelope.scope)
 
     const freshSnapshot = await this.readSnapshot()
+    findExactSender(freshSnapshot.agents, envelope.sender)
     const target = findExactTarget(freshSnapshot.agents, envelope, envelope.scope)
 
+    const claim = await this.deduplicationStore.claim(envelope.idempotency_key)
+    if (!claim.acquired) {
+      if (claim.receipt !== undefined) {
+        return {
+          ...claim.receipt,
+          detail: "duplicate idempotency key; returned the existing Herdr submission receipt",
+        }
+      }
+      return {
+        message_id: envelope.message_id,
+        state: DELIVERY_STATE.UNKNOWN,
+        recorded_at: this.now().toISOString(),
+        detail: "duplicate idempotency key is already in flight; no second prompt was submitted",
+        target,
+        command: { stdout: "", stderr: "", exit_code: null },
+      }
+    }
+
     let command: HerdrCommandResult
+    let receipt: HerdrDeliveryReceipt
     try {
       command = await this.transport.prompt(target.identity.location.pane_id, envelope.body.text)
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Herdr prompt outcome is unknown"
-      return {
+      receipt = {
         message_id: envelope.message_id,
         state: DELIVERY_STATE.UNKNOWN,
         recorded_at: this.now().toISOString(),
@@ -213,9 +262,11 @@ export class HerdrTeamClient {
         target,
         command: { stdout: "", stderr: detail, exit_code: null },
       }
+      await this.deduplicationStore.complete(envelope.idempotency_key, receipt)
+      return receipt
     }
 
-    return {
+    receipt = {
       message_id: envelope.message_id,
       state: command.exit_code === 0 ? DELIVERY_STATE.SUBMITTED_TO_HERDR : DELIVERY_STATE.FAILED,
       recorded_at: this.now().toISOString(),
@@ -225,6 +276,8 @@ export class HerdrTeamClient {
       target,
       command,
     }
+    await this.deduplicationStore.complete(envelope.idempotency_key, receipt)
+    return receipt
   }
 
   private async readSnapshot(): Promise<HerdrSnapshot> {
@@ -238,7 +291,7 @@ export class HerdrTeamClient {
     }
 
     if (this.caller === undefined) {
-      throw new Error("explicit scope is required when the verified current tab is unavailable")
+      throw new HerdrRejectionError(REJECTION_CODE.INVALID_SCOPE, "explicit scope is required when the verified current tab is unavailable")
     }
 
     const caller = this.findCaller(snapshot)
@@ -246,14 +299,18 @@ export class HerdrTeamClient {
   }
 
   private findCaller(snapshot: HerdrSnapshot): AgentDescriptor {
-    if (this.caller === undefined) throw new Error("caller context is unavailable")
+    if (this.caller === undefined) {
+      throw new HerdrRejectionError(REJECTION_CODE.INVALID_IDENTITY, "caller context is unavailable")
+    }
     const caller = snapshot.agents.find((agent) => agent.identity.location.pane_id === this.caller?.location.pane_id)
-    if (caller === undefined) throw new Error("verified current pane was not found in the Herdr snapshot")
+    if (caller === undefined) {
+      throw new HerdrRejectionError(REJECTION_CODE.SENDER_STALE, "verified current pane was not found in the Herdr snapshot")
+    }
     if (!sameLocation(caller.identity.location, this.caller.location)) {
-      throw new Error("verified current pane location changed; rediscover before continuing")
+      throw new HerdrRejectionError(REJECTION_CODE.SENDER_STALE, "verified current pane location changed; rediscover before continuing")
     }
     if (this.caller.session_id !== undefined && caller.identity.session_id !== this.caller.session_id) {
-      throw new Error("verified current session changed; rediscover before continuing")
+      throw new HerdrRejectionError(REJECTION_CODE.SENDER_STALE, "verified current session changed; rediscover before continuing")
     }
     return caller
   }
@@ -275,7 +332,7 @@ export function normalizeHerdrSnapshot(input: unknown): HerdrSnapshot {
     seenPanes.add(location.pane_id)
     agents.push({
       identity: {
-        provider: readNestedString(raw, "agent", "provider") ?? readString(raw, ["provider"]) ?? "unknown",
+        provider: readProvider(raw),
         session_id: sessionId,
         location,
       },
@@ -320,19 +377,33 @@ function parseHerdrJson(result: HerdrCommandResult, label: string): unknown {
 
 function findSendableTarget(agents: AgentDescriptor[], paneId: string, scope: ExplicitScope): AgentDescriptor {
   const target = agents.find((agent) => agent.identity.location.pane_id === paneId)
-  if (target === undefined) throw new Error(`target pane '${paneId}' is not an eligible target`)
-  if (!isInScope(target, scope)) throw new Error(`target pane '${paneId}' is outside the requested scope`)
-  if (!target.capabilities.can_submit_to_herdr) throw new Error(`target pane '${paneId}' cannot accept Herdr prompts`)
+  if (target === undefined) {
+    throw new HerdrRejectionError(REJECTION_CODE.TARGET_NOT_ELIGIBLE, `target pane '${paneId}' is not an eligible target`)
+  }
+  if (!isInScope(target, scope)) {
+    throw new HerdrRejectionError(REJECTION_CODE.OUT_OF_SCOPE, `target pane '${paneId}' is outside the requested scope`)
+  }
+  if (!target.capabilities.can_submit_to_herdr) {
+    throw new HerdrRejectionError(REJECTION_CODE.TARGET_NOT_ELIGIBLE, `target pane '${paneId}' cannot accept Herdr prompts`)
+  }
   if (isBlockedOrUnknown(target.availability)) {
-    throw new Error(`target pane '${paneId}' has blocked/unknown status '${target.availability}'`)
+    throw new HerdrRejectionError(REJECTION_CODE.TARGET_NOT_ELIGIBLE, `target pane '${paneId}' has blocked/unknown status '${target.availability}'`)
   }
   return target
+}
+
+function findExactSender(agents: AgentDescriptor[], sender: AgentIdentity): AgentDescriptor {
+  const current = agents.find((agent) => agent.identity.location.pane_id === sender.location.pane_id)
+  if (current === undefined || !sameIdentity(current.identity, sender)) {
+    throw new HerdrRejectionError(REJECTION_CODE.SENDER_STALE, "sender identity changed; rediscover and authorize the current sender again")
+  }
+  return current
 }
 
 function findExactTarget(agents: AgentDescriptor[], envelope: MessageEnvelope, scope: ExplicitScope): AgentDescriptor {
   const target = findSendableTarget(agents, envelope.recipient.location.pane_id, scope)
   if (!sameIdentity(target.identity, envelope.recipient)) {
-    throw new Error("target identity changed; rediscover and authorize the exact pane again")
+    throw new HerdrRejectionError(REJECTION_CODE.TARGET_STALE, "target identity changed; rediscover and authorize the exact pane again")
   }
   return target
 }
@@ -374,6 +445,12 @@ function readSessionId(value: RecordValue): string | undefined {
   const session = recordValue(value, "agent_session")
   if (!isRecord(session)) return undefined
   return readString(session, ["value", "session_id"])
+}
+
+function readProvider(value: RecordValue): string {
+  const agent = recordValue(value, "agent")
+  if (typeof agent === "string" && agent.trim() !== "") return agent.trim()
+  return readNestedString(value, "agent", "provider") ?? readString(value, ["provider"]) ?? "unknown"
 }
 
 function readNestedString(value: RecordValue, parentKey: string, childKey: string): string | undefined {
@@ -422,7 +499,9 @@ function isRecord(value: unknown): value is RecordValue {
 }
 
 function requireText(text: string): string {
-  if (typeof text !== "string" || text.trim() === "") throw new Error("message text must not be empty")
+  if (typeof text !== "string" || text.trim() === "") {
+    throw new HerdrRejectionError(REJECTION_CODE.INVALID_ARGUMENT, "message text must not be empty")
+  }
   return text
 }
 

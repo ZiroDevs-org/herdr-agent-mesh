@@ -16,6 +16,10 @@ The send path reports `submitted_to_herdr` when Herdr accepts the prompt. It doe
 
 The current capability model sets `can_receive` and `can_reply` to `false` until those adapters exist. Claude, Codex, Gemini, and Antigravity delivery must not be inferred from discovery or submission.
 
+Consent is issued separately from the message envelope. The CLI `--authorize` flag and daemon `authorize: true` entrypoints call the consent factory, which returns an in-process receipt/token bound to the exact message ID, target pane, scope, and text. A fabricated receipt-shaped object is rejected.
+
+Idempotency is backed by an injectable deduplication store. The default store is memory-only for the current client process: a daemon retains entries for its lifetime, while separate CLI invocations do not share them. A duplicate key returns the existing receipt (or an `unknown` in-flight result) without submitting a second prompt; durable persistence is intentionally deferred.
+
 ## Requirements
 
 - Bun 1.1+ or Node 20+ with Bun available for the test/build scripts.
@@ -29,6 +33,7 @@ bun test
 bunx tsc --noEmit
 bun run build
 bun run validate:manifest
+bun run validate:pack
 ```
 
 ## CLI
@@ -50,7 +55,7 @@ bun run src/cli.ts send \
   --json
 ```
 
-The CLI never broadcasts. Pane IDs are exact routing identities; labels, cwd, title, and focus are descriptive metadata only.
+The CLI never broadcasts. Pane IDs are exact routing identities; labels, cwd, title, and focus are descriptive metadata only. Validation and authorization failures are JSON results with `state: "rejected"` and a machine-readable `reason.code`.
 
 ## Daemon
 
